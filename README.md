@@ -6,6 +6,15 @@ K8s Autopilot monitors your cluster pods in real time, predicts failures before 
 
 ---
 
+## Dashboard Screenshots
+
+Add dashboard screenshots to `docs/images/dashboard/`.
+
+Suggested filenames:
+
+- `dashboard-overview.png`
+- `dashboard-risk-feed.png`
+
 ## Architecture
 
 ```
