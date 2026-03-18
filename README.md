@@ -218,4 +218,5 @@ This project is licensed under the MIT License.
 Taarunya Aggarwal
 
 GitHub: @Taarunya
+
 Email: taru.agg05@gmail.com
