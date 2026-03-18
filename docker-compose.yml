@@ -1,0 +1,160 @@
+services:
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: autopilot-prometheus
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    networks:
+      - autopilot
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: autopilot-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - autopilot
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  exporter:
+    build:
+      context: ./exporter
+      dockerfile: Dockerfile
+    container_name: autopilot-exporter
+    environment:
+      - MOCK_MODE=true
+      - NUM_PODS=30
+      - INJECT_ANOMALIES=true
+    ports:
+      - "8000:8000"
+    networks:
+      - autopilot
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/metrics')\"" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  predictor:
+    build:
+      context: ./predictor
+      dockerfile: Dockerfile
+    container_name: autopilot-predictor
+    environment:
+      - PROMETHEUS_URL=http://prometheus:9090
+      - REDIS_URL=redis://redis:6379
+      - MODEL_DIR=/models
+      - PREDICTION_INTERVAL=30
+      - RISK_THRESHOLD_HIGH=0.75
+      - RISK_THRESHOLD_MEDIUM=0.50
+      - LOG_LEVEL=INFO
+      - API_KEY=${API_KEY:-}
+    volumes:
+      - models_data:/models
+    ports:
+      - "8001:8001"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - autopilot
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\"" ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  operator:
+    build:
+      context: ./operator
+      dockerfile: Dockerfile
+    container_name: autopilot-operator
+    environment:
+      - PREDICTOR_URL=http://predictor:8001
+      - REDIS_URL=redis://redis:6379
+      - MOCK_K8S=true
+      - AUTO_REMEDIATE=true
+      - DRY_RUN=false
+      - COOLDOWN_SECS=300
+      - LOOP_INTERVAL=30
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - API_KEY=${API_KEY:-}
+      - LOG_LEVEL=INFO
+    ports:
+      - "8002:8002"
+    depends_on:
+      predictor:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - autopilot
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health')\"" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: autopilot-dashboard
+    environment:
+      - PREDICTOR_URL=http://predictor:8001
+      - OPERATOR_URL=http://operator:8002
+      - PROMETHEUS_URL=http://prometheus:9090
+      - REDIS_URL=redis://redis:6379
+    ports:
+      - "3001:3000"
+    depends_on:
+      predictor:
+        condition: service_healthy
+      operator:
+        condition: service_healthy
+    networks:
+      - autopilot
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:3000/api/summary')\"" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+networks:
+  autopilot:
+    driver: bridge
+
+volumes:
+  prometheus_data:
+  models_data:
+  redis_data:

@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: exporter
+  namespace: autopilot
+  labels:
+    app: exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: exporter
+  template:
+    metadata:
+      labels:
+        app: exporter
+    spec:
+      containers:
+        - name: exporter
+          image: k8s-autopilot-exporter:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: MOCK_MODE
+              value: "true"
+            - name: NUM_PODS
+              value: "30"
+            - name: INJECT_ANOMALIES
+              value: "true"
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 256Mi
+              cpu: 300m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: exporter
+  namespace: autopilot
+spec:
+  selector:
+    app: exporter
+  ports:
+    - port: 8000
+      targetPort: 8000

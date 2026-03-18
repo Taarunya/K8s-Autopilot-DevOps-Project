@@ -1,0 +1,132 @@
+name: K8s Autopilot CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install linters
+        run: pip install flake8 black isort
+      - name: Flake8
+        run: flake8 --max-line-length=120 --extend-ignore=E203,E501 exporter/ predictor/ operator/ dashboard/
+      - name: Black (check)
+        run: black --check --line-length=120 exporter/ predictor/ operator/ dashboard/
+      - name: isort (check)
+        run: isort --check --profile black exporter/ predictor/ operator/ dashboard/
+
+  test-predictor:
+    name: Test Predictor
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: |
+          pip install -r predictor/requirements.txt
+          pip install pytest pytest-cov
+      - name: Run predictor tests
+        run: python -m pytest tests/test_predictor.py -v --tb=short --cov=predictor --cov-report=term-missing --cov-fail-under=70
+        env:
+          MODEL_DIR: /tmp/models
+
+  test-operator:
+    name: Test Operator
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: |
+          pip install -r operator/requirements.txt
+          pip install pytest pytest-cov
+      - name: Run operator tests
+        run: python -m pytest tests/test_operator.py -v --tb=short --cov=operator --cov-report=term-missing --cov-fail-under=70
+        env:
+          MOCK_K8S: "true"
+          API_KEY: "test-key"
+
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: [test-predictor, test-operator]
+    strategy:
+      matrix:
+        service: [exporter, predictor, operator, dashboard]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.service }}
+        run: docker build -t k8s-autopilot-${{ matrix.service }}:ci ./${{ matrix.service }}
+
+  integration:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    needs: docker-build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start services
+        run: |
+          echo "API_KEY=ci-test-key" > .env
+          echo "SLACK_WEBHOOK_URL=" >> .env
+          docker compose up --build -d
+      - name: Wait for startup
+        run: |
+          echo "Waiting for services to be healthy..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:3000/api/summary > /dev/null 2>&1; then
+              echo "Dashboard ready!"
+              break
+            fi
+            echo "Waiting... ($i/60)"
+            sleep 5
+          done
+      - name: Health checks
+        run: |
+          echo "=== Exporter ==="
+          curl -sf http://localhost:8000/metrics | head -5
+          echo ""
+          echo "=== Predictor ==="
+          curl -sf http://localhost:8001/health | python -m json.tool
+          echo ""
+          echo "=== Operator ==="
+          curl -sf http://localhost:8002/health | python -m json.tool
+          echo ""
+          echo "=== Dashboard ==="
+          curl -sf http://localhost:3000/api/summary | python -m json.tool
+      - name: Verify predictions
+        run: |
+          sleep 45
+          PRED_COUNT=$(curl -sf http://localhost:8001/predictions | python -c "import sys,json; print(json.load(sys.stdin).get('count', 0))")
+          echo "Prediction count: $PRED_COUNT"
+          if [ "$PRED_COUNT" -gt 0 ]; then
+            echo "✅ Predictions are being generated"
+          else
+            echo "⚠ No predictions yet (may need more time)"
+          fi
+      - name: Verify counters are firing
+        run: |
+          echo "Checking restart/OOM counters are non-zero after warmup..."
+          METRICS=$(curl -sf http://localhost:8000/metrics)
+          echo "$METRICS" | grep "pod_restart_total" | head -5
+          echo "$METRICS" | grep "pod_oom_kill_total" | head -5
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v

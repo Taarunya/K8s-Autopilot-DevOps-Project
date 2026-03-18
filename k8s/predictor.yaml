@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: autopilot-secrets
+  namespace: autopilot
+type: Opaque
+stringData:
+  api-key: "changeme-generate-a-secure-key"
+  slack-webhook-url: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: predictor
+  namespace: autopilot
+  labels:
+    app: predictor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: predictor
+  template:
+    metadata:
+      labels:
+        app: predictor
+    spec:
+      containers:
+        - name: predictor
+          image: k8s-autopilot-predictor:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8001
+          env:
+            - name: PROMETHEUS_URL
+              value: "http://prometheus:9090"
+            - name: REDIS_URL
+              value: "redis://redis:6379"
+            - name: MODEL_DIR
+              value: "/models"
+            - name: PREDICTION_INTERVAL
+              value: "30"
+            - name: RISK_THRESHOLD_HIGH
+              value: "0.75"
+            - name: RISK_THRESHOLD_MEDIUM
+              value: "0.50"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: autopilot-secrets
+                  key: api-key
+          volumeMounts:
+            - name: models
+              mountPath: /models
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 45
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 200m
+            limits:
+              memory: 1Gi
+              cpu: "1"
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: models-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models-pvc
+  namespace: autopilot
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: predictor
+  namespace: autopilot
+spec:
+  selector:
+    app: predictor
+  ports:
+    - port: 8001
+      targetPort: 8001

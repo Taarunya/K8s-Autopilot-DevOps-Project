@@ -1,0 +1,116 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: autopilot-operator
+  namespace: autopilot
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: autopilot-operator
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: autopilot-operator
+subjects:
+  - kind: ServiceAccount
+    name: autopilot-operator
+    namespace: autopilot
+roleRef:
+  kind: ClusterRole
+  name: autopilot-operator
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: operator
+  namespace: autopilot
+  labels:
+    app: operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: operator
+  template:
+    metadata:
+      labels:
+        app: operator
+    spec:
+      serviceAccountName: autopilot-operator
+      containers:
+        - name: operator
+          image: k8s-autopilot-operator:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8002
+          env:
+            - name: PREDICTOR_URL
+              value: "http://predictor:8001"
+            - name: REDIS_URL
+              value: "redis://redis:6379"
+            - name: MOCK_K8S
+              value: "false"
+            - name: AUTO_REMEDIATE
+              value: "true"
+            - name: DRY_RUN
+              value: "false"
+            - name: COOLDOWN_SECS
+              value: "300"
+            - name: LOOP_INTERVAL
+              value: "30"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: autopilot-secrets
+                  key: api-key
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: autopilot-secrets
+                  key: slack-webhook-url
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8002
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8002
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 100m
+            limits:
+              memory: 512Mi
+              cpu: 500m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: operator
+  namespace: autopilot
+spec:
+  selector:
+    app: operator
+  ports:
+    - port: 8002
+      targetPort: 8002
