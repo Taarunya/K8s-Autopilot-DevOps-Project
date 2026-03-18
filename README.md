@@ -211,4 +211,11 @@ k8s-autopilot/
 
 ## License
 
-MIT
+This project is licensed under the MIT License.
+
+## Author
+
+Taarunya Aggarwal
+
+GitHub: @Taarunya
+Email: taru.agg05@gmail.com
